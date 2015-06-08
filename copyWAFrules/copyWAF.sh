@@ -5,7 +5,11 @@ TOKEN_HOME=""
 client_id=""
 client_secret=""
 template_webapp_id=""
+webapp_to_process_id=""
 console="on"
+error_command_file="./error_command.log"
+is_execute_with_breakpoints="on"
+is_error_command_log="on"
 
 if (( $# > 1 )); then
 	log_file_name=$2
@@ -15,6 +19,7 @@ fi
 
 now=$(date +%Y%m%d%H%M%S)
 export WAF_LOG_FILE=$log_file_name.$now
+export ERROR_COMMAND_LOG_FILE=$error_command_file.$now
 
 function log {
 if [ "${console^^}" == "ON" ]; then
@@ -26,6 +31,12 @@ fi
 function log_error {
      printf '%s\n' "$1"
 	 printf '%s\n' "$1">>${WAF_LOG_FILE}
+}
+
+function log_error_command {
+     if [ "${is_error_command_log^^}" == "ON" ]; then
+		printf '%s\n' "$1">>${ERROR_COMMAND_LOG_FILE}
+	 fi
 }
 
 if (( $# > 0 )); then
@@ -162,13 +173,30 @@ if [ "$has_template_rules" == "false" ]; then
 fi
 done
 
+if [ "$webapp_to_process_id" != "" ]; then
+	apps_ids=($webapp_to_process_id)
+fi
+
+
 log "+++ info: Starting update WAF by template webapp: $template_webapp_id"
 for app_id in "${apps_ids[@]}"
 do 
 	app_id=$(echo ${app_id//[$'\t\r\n']})
     if [ "$app_id" == "$template_webapp_id" ]; then
 		log "+++ info: Skip to update template webapp: $app_id"
-    else
+    else 
+		if [ "${is_execute_with_breakpoints^^}" == "ON" ]; then
+			echo "We are going to update WAF rules for webapp: $app_id."
+			echo "Do you want to process it? (Y)es, process/(N)o, skip it/(E)xit"
+			read is_continue
+			if [ "${is_continue^^}" == "N" ]; then
+				continue
+			else
+				if [ "${is_continue^^}" == "E" ]; then
+					exit;
+				fi
+			fi
+		fi
 		log "+++ info: Start updating WAF rules for: $app_id"
 		for rule in "${template_rules[@]}"
 		do
@@ -178,13 +206,16 @@ do
 			update_waf_command="curl -sS --write-out ';http_code=%{http_code}' -X PUT -H \"Content-Type:application/json\" -H \"Authorization: Bearer $token\" --data-binary \"{\\\"value\\\": \\\"$rule_value\\\"}\" $API_HOME/webapps/$app_id/waf_rules/$rule_id"
 			command_out="$(eval "$update_waf_command")"
 			if [ "$?" -ne 0 ]; then 
-				log_error  "--- err: Couldn't update WAF rule \"$rule_id\" for \"$app_id\", curl command error" 
+				log_error_command "$update_waf_command"
+				log_error "--- err: WAF rule \"$rule_id\" with value \"$rule_value\" for \"$app_id\" was not updated!" 
+				log_error "--- err: curl command error"
 			else 
 				task_id=$(echo $command_out | cut -d \; -f 1)
 				task_id="$(printf '%s\n' "$task_id" | jq -r '.task_id?')"
 				task_id=$(echo ${task_id//[$'\t\r\n']})
 				if [ "$task_id" == "null" ] || (( ${#task_id} == 0 )); then
-					log_error "--- err: WAF rule \"$rule_id\" for \"$app_id\" was not updated!"
+					log_error_command "$update_waf_command"
+					log_error "--- err: WAF rule \"$rule_id\" with value \"$rule_value\" for \"$app_id\" was not updated!"
 				    log_error "--- err: API error occured with message: $command_out"
 				else
 					log "WAF \"$rule_id\" updated with success."
